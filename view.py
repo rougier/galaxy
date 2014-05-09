@@ -7,14 +7,12 @@
 #
 #  Python version(c) 2014 Nicolas P.Rougier
 # -----------------------------------------------------------------------------
-import sys
 import numpy as np
-import OpenGL.GL as gl
-import OpenGL.GLUT as glut
 
 from galaxy import Galaxy
 from vispy import gloo
-from vispy.util.transforms import perspective, translate, rotate
+from vispy.app import Canvas
+from vispy.util.transforms import perspective, translate
 
 
 vertex = """
@@ -55,86 +53,64 @@ void main()
 }
 """
 
-def display():
-    gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-    t0 = 1000.
-    t1 = 10000.
-    gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE);
-    program['a_position']    = galaxy['position'] / 15000.0
-    program['a_temperature'] = (galaxy['temperature'] - t0) / (t1-t0)
-    program['a_brightness']  = galaxy['brightness']
-    program.draw(gl.GL_POINTS)
 
-    glut.glutSwapBuffers()
+class GalaxyCanvas(Canvas):
+    def __init__(self):
+        Canvas.__init__(self, size=[800, 800], close_keys='ESCAPE', show=True,
+                        title='Galaxy')
+        self.galaxy = Galaxy(35000)
+        self.galaxy.reset(13000, 4000, 0.0004, 0.90, 0.90, 0.5, 200, 300)
+        program = gloo.Program(vertex, fragment, count=len(self.galaxy))
+        view = np.eye(4, dtype=np.float32)
+        translate(view, 0, 0, -5)
+        program['u_view'] = view
+        program['u_model'] = np.eye(4, dtype=np.float32)
+        program['u_projection'] = np.eye(4, dtype=np.float32)
 
-def reshape(width, height):
-    gl.glViewport(0, 0, width, height)
-    projection = perspective(45.0, width / float(height), 1.0, 1000.0)
-    program['u_projection'] = projection
+        from PIL import Image
+        from specrend import (SMPTEsystem, spectrum_to_xyz, norm_rgb,
+                              xyz_to_rgb, bb_spectrum)
+        image = Image.open("particle.bmp")
+        program['u_texture'] = np.array(image)/255.0
+        t0 = 1000.
+        t1 = 10000.
+        n = 256
+        dt = (t1 - t0) / n
+        colors = np.zeros((1, n, 3), dtype=np.float32)
+        for i in range(n):
+            cs = SMPTEsystem
+            temperature = t0 + i*dt
+            x, y, z = spectrum_to_xyz(bb_spectrum, temperature)
+            r, g, b = xyz_to_rgb(cs, x, y, z)
+            colors[0, i] = norm_rgb(r, g, b)
+        program['u_colormap'] = gloo.Texture2D(colors)
+        program['a_size'] = self.galaxy['size']
+        program['a_type'] = self.galaxy['type']
+        self.program = program
 
-def keyboard(key, x, y):
-    if key == '\033': sys.exit()
+    def on_initialize(self):
+        gloo.set_clear_color((0.0, 0.0, 0.0, 1.0))
+        gloo.set_state(blend=True, depth_test=True,
+                       blend_func=('src_alpha', 'one_minus_src_alpha'))
 
-def timer(fps):
-    galaxy.update(100000) # in years !
-    program['a_size'] = galaxy['size']
-    glut.glutTimerFunc(1000 / fps, timer, fps)
-    glut.glutPostRedisplay()
+    def on_paint(self, region):
+        self.galaxy.update(100000)  # in years !
+        self.program['a_size'] = self.galaxy['size']
+        gloo.clear()
+        t0 = 1000.
+        t1 = 10000.
+        gloo.set_state(blend=True, blend_func=('src_alpha', 'one'))
+        self.program['a_position'] = self.galaxy['position'] / 15000.0
+        self.program['a_temperature'] = ((self.galaxy['temperature'] - t0)
+                                         / (t1-t0))
+        self.program['a_brightness'] = self.galaxy['brightness']
+        self.program.draw('points')
 
+    def on_resize(self, width, height):
+        gloo.set_viewport(0, 0, width, height)
+        projection = perspective(45.0, width / float(height), 1.0, 1000.0)
+        self.program['u_projection'] = projection
 
-galaxy = Galaxy(35000)
-galaxy.reset(13000, 4000, 0.0004, 0.90, 0.90, 0.5, 200, 300)
-
-glut.glutInit(sys.argv)
-glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
-glut.glutCreateWindow('Galaxy')
-glut.glutReshapeWindow(800,800)
-glut.glutReshapeFunc(reshape)
-glut.glutKeyboardFunc(keyboard)
-glut.glutDisplayFunc(display)
-glut.glutTimerFunc(1000 / 60, timer, 60)
-
-program = gloo.Program(vertex, fragment, count = len(galaxy))
-view = np.eye(4, dtype=np.float32)
-model = np.eye(4, dtype=np.float32)
-projection = np.eye(4, dtype=np.float32)
-translate(view, 0, 0, -5)
-program['u_model'] = model
-program['u_view'] = view
-
-from PIL import Image
-image = Image.open("particle.bmp")
-program['u_texture'] = np.array(image)/255.0
-
-from specrend import *
-
-t0 = 1000.
-t1 = 10000.
-n = 256
-dt =  (t1-t0)/n
-colors = np.zeros((1,n,3), dtype=np.float32)
-for i in range(n):
-    cs = SMPTEsystem
-    temperature = t0 + i*dt
-    x,y,z = spectrum_to_xyz(bb_spectrum, temperature)
-    r,g,b = xyz_to_rgb(cs, x, y, z)
-    colors[0,i] = norm_rgb(r, g, b)
-program['u_colormap'] = gloo.Texture2D(colors)
-program['a_size'] = galaxy['size']
-program['a_type'] = galaxy['type']
-
-
-
-# OpenGL initalization
-# --------------------------------------
-gl.glClearColor(0.0, 0.0, 0.0, 1.0)
-gl.glEnable(gl.GL_BLEND)
-gl.glEnable(gl.GL_DEPTH_TEST)
-gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-gl.glEnable(gl.GL_VERTEX_PROGRAM_POINT_SIZE)
-gl.glEnable(gl.GL_POINT_SPRITE)
-
-# Start
-# --------------------------------------
-glut.glutMainLoop()
+if __name__ == '__main__':
+    c = GalaxyCanvas()
+    c.app.run()
